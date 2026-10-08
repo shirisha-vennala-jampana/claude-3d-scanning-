@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scan3d"
+version = "0.1.0"
+description = "Build a 3D world from video/images (or RGB-D captures) and embed metadata into it."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+scan3d = "scan3d.cli:main"
+
+[tool.setuptools]
+packages = ["scan3d"]
+
+[tool.setuptools.package-data]
+scan3d = ["viewer_template.html"]

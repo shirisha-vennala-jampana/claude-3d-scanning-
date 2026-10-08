@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #5b6475; --line: #dde1e8;
+    --accent: #2f6fde; --tag-bg: rgba(255,255,255,.92);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #13161c; --panel: #1b1f27; --text: #e6e9ef; --muted: #9aa3b2; --line: #2b313c;
+      --accent: #6c9cff; --tag-bg: rgba(27,31,39,.92);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #app { display: flex; height: 100%; }
+  #view { flex: 1; position: relative; min-width: 0; }
+  #view canvas { display: block; }
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .tag { position: absolute; transform: translate(-50%, -130%); background: var(--tag-bg); border: 1px solid var(--line);
+    border-left: 4px solid var(--c); padding: 2px 8px; border-radius: 6px; white-space: nowrap; pointer-events: auto;
+    cursor: pointer; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.15);
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  aside { width: 320px; background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; padding: 14px 16px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  label.row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  input[type=text], input[type=number], textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 60px; resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; }
+  button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);
+    font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li.ann { padding: 8px; border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+  li.ann.new { border-style: dashed; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 4px 0 0; color: var(--muted); }
+  #pick { display: none; }
+  #hint { position: absolute; left: 12px; bottom: 12px; background: var(--tag-bg); padding: 6px 10px; border-radius: 6px;
+    font-size: 12px; color: var(--muted); border: 1px solid var(--line); }
+  @media (max-width: 760px) {
+    #app { flex-direction: column; }
+    #view { height: 60vh; flex: none; }
+    aside { width: 100%; border-left: none; border-top: 1px solid var(--line); padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="view"><div id="labels"></div><div id="hint">Drag to orbit · scroll to zoom · <b>Shift+click</b> (or long-press) a point to tag it</div></div>
+  <aside>
+    <h1>3D scan</h1>
+    <div class="muted" id="summary"></div>
+
+    <h2>Display</h2>
+    <label class="row">Point size <input type="range" id="size" min="1" max="12" value="3" style="flex:1"></label>
+    <label class="row"><input type="checkbox" id="showCams" checked> Camera positions</label>
+    <label class="row"><input type="checkbox" id="showTags" checked> Tags</label>
+
+    <div id="pick">
+      <h2>New tag</h2>
+      <div class="muted" id="pickPos"></div>
+      <p><input type="text" id="newLabel" placeholder="Label, e.g. thermostat"></p>
+      <p><label class="row">Radius <input type="number" id="newRadius" step="0.05" min="0.01"></label></p>
+      <p><textarea id="newProps" placeholder="key = value (one per line)&#10;note = replace filter&#10;installed = 2024-03"></textarea></p>
+      <p><button class="primary" id="addTag">Add tag</button> <button id="cancelTag">Cancel</button></p>
+    </div>
+
+    <h2>Tags</h2>
+    <ul id="annList"></ul>
+    <p class="muted" id="noTags">No tags yet.</p>
+    <p><button id="download">Download tags.json</button></p>
+    <p class="muted">Import back with <code>scan3d import-tags &lt;scene&gt; tags.json</code> to embed them in the PLY, floor plan and scene file.</p>
+
+    <h2>Selected</h2>
+    <div id="detail" class="muted">Click a tag to see its metadata.</div>
+  </aside>
+</div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const DATA = /*__SCENE_DATA__*/null;
+const PALETTE = ["#e67828", "#3caa3c", "#285ac8", "#aa3caa", "#c8aa1e", "#1e7878", "#c83c5a", "#969696"];
+const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+const view = document.getElementById("view");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+view.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.001, 1000);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+function bg() {
+  scene.background = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue("--bg").trim());
+}
+bg();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", bg);
+
+// world group: data coordinates (centred), rotated so the scene's up is +Y
+const world = new THREE.Group();
+const up = new THREE.Vector3(...DATA.up).normalize();
+world.quaternion.setFromUnitVectors(up, new THREE.Vector3(0, 1, 0));
+scene.add(world);
+
+const pos = new Float32Array(b64(DATA.positions).buffer);
+const col = b64(DATA.colors);
+const geom = new THREE.BufferGeometry();
+geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+geom.setAttribute("color", new THREE.BufferAttribute(new Float32Array(col).map((v) => v / 255), 3));
+geom.computeBoundingSphere();
+const R = geom.boundingSphere.radius || 1;
+const ptsMat = new THREE.PointsMaterial({ size: 3, sizeAttenuation: false, vertexColors: true });
+const cloud = new THREE.Points(geom, ptsMat);
+world.add(cloud);
+
+// robust scene size: median distance from centre
+const d = [];
+for (let i = 0; i < pos.length; i += 3 * Math.max(1, Math.floor(pos.length / 30000))) d.push(Math.hypot(pos[i], pos[i + 1], pos[i + 2]));
+d.sort((a, b) => a - b);
+const S = d.length ? d[Math.floor(d.length / 2)] * 2 : R;
+
+// camera frustums
+const cams = new THREE.Group();
+const camMat = new THREE.LineBasicMaterial({ color: 0xd04040 });
+for (const c of DATA.cameras) {
+  const s = S * 0.06, Rm = c.R, K = c.K;
+  const corners = [[0, 0], [c.width, 0], [c.width, c.height], [0, c.height]].map(([u, v]) => {
+    const x = (u - K[0][2]) / K[0][0] * s, y = (v - K[1][2]) / K[1][1] * s, z = s;
+    // camera -> world: R^T * p + centre
+    return new THREE.Vector3(
+      Rm[0][0] * x + Rm[1][0] * y + Rm[2][0] * z + c.center[0],
+      Rm[0][1] * x + Rm[1][1] * y + Rm[2][1] * z + c.center[1],
+      Rm[0][2] * x + Rm[1][2] * y + Rm[2][2] * z + c.center[2]);
+  });
+  const o = new THREE.Vector3(...c.center);
+  const p = [o, corners[0], o, corners[1], o, corners[2], o, corners[3], corners[0], corners[1], corners[1], corners[2], corners[2], corners[3], corners[3], corners[0]];
+  cams.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(p), camMat));
+}
+world.add(cams);
+
+// tags
+const anns = DATA.annotations.map((a) => ({ ...a, isNew: false }));
+const tagGroup = new THREE.Group();
+world.add(tagGroup);
+const labelsEl = document.getElementById("labels");
+let selected = null;
+
+function rebuildTags() {
+  tagGroup.clear();
+  labelsEl.innerHTML = "";
+  const list = document.getElementById("annList");
+  list.innerHTML = "";
+  document.getElementById("noTags").style.display = anns.length ? "none" : "";
+  anns.forEach((a, i) => {
+    const c = PALETTE[i % PALETTE.length];
+    const sph = new THREE.Mesh(new THREE.SphereGeometry(a.radius, 20, 14),
+      new THREE.MeshBasicMaterial({ color: c, wireframe: true, transparent: true, opacity: 0.6 }));
+    sph.position.set(...a.position);
+    tagGroup.add(sph);
+    const el = document.createElement("div");
+    el.className = "tag"; el.style.setProperty("--c", c); el.textContent = a.label;
+    el.onclick = () => select(i);
+    labelsEl.appendChild(el);
+    a._el = el;
+    const li = document.createElement("li");
+    li.className = "ann" + (a.isNew ? " new" : ""); li.style.setProperty("--c", c);
+    li.innerHTML = `<b></b> <span class="muted">${a.isNew ? "(not yet imported)" : a.source}</span>`;
+    li.querySelector("b").textContent = a.label;
+    li.onclick = () => select(i);
+    list.appendChild(li);
+  });
+}
+
+function worldPos(a) {
+  return new THREE.Vector3(...a.position).applyMatrix4(world.matrixWorld);
+}
+
+function select(i) {
+  selected = i;
+  const a = anns[i];
+  const det = document.getElementById("detail");
+  const abs = a.position.map((v, k) => (v + DATA.centre[k]).toFixed(3));
+  det.innerHTML = `<b></b><pre></pre>`;
+  det.querySelector("b").textContent = a.label;
+  det.querySelector("pre").textContent =
+    `id: ${a.id}\nposition: [${abs.join(", ")}]\nradius: ${a.radius}\nsource: ${a.source}\n` +
+    Object.entries(a.properties || {}).map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : v}`).join("\n");
+  const target = worldPos(a);
+  const offset = camera.position.clone().sub(controls.target);
+  controls.target.copy(target);
+  camera.position.copy(target).add(offset.setLength(Math.max(a.radius * 6, S * 0.4)));
+}
+
+// picking
+const ray = new THREE.Raycaster();
+let picked = null;
+function pickAt(clientX, clientY) {
+  const r = renderer.domElement.getBoundingClientRect();
+  const m = new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(m, camera);
+  ray.params.Points.threshold = S * 0.01;
+  const hits = ray.intersectObject(cloud);
+  if (!hits.length) return;
+  const local = world.worldToLocal(hits[0].point.clone());
+  picked = [local.x, local.y, local.z];
+  const abs = picked.map((v, k) => (v + DATA.centre[k]).toFixed(3));
+  document.getElementById("pick").style.display = "block";
+  document.getElementById("pickPos").textContent = `at [${abs.join(", ")}] ${DATA.units === "meters" ? "m" : "(scene units)"}`;
+  document.getElementById("newRadius").value = (S * 0.05).toPrecision(2);
+  document.getElementById("newLabel").focus();
+}
+renderer.domElement.addEventListener("click", (e) => { if (e.shiftKey) pickAt(e.clientX, e.clientY); });
+let pressTimer = null;
+renderer.domElement.addEventListener("pointerdown", (e) => {
+  if (e.pointerType !== "touch") return;
+  pressTimer = setTimeout(() => pickAt(e.clientX, e.clientY), 600);
+});
+["pointerup", "pointermove", "pointercancel"].forEach((t) => renderer.domElement.addEventListener(t, () => clearTimeout(pressTimer)));
+
+document.getElementById("addTag").onclick = () => {
+  const label = document.getElementById("newLabel").value.trim();
+  if (!picked || !label) return;
+  const props = {};
+  for (const line of document.getElementById("newProps").value.split("\n")) {
+    const i = line.indexOf("=");
+    if (i > 0) props[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+  }
+  anns.push({ id: Math.random().toString(16).slice(2, 10), label, position: picked,
+    radius: parseFloat(document.getElementById("newRadius").value) || S * 0.05,
+    properties: props, source: "viewer", created: Date.now() / 1000, isNew: true });
+  document.getElementById("pick").style.display = "none";
+  document.getElementById("newLabel").value = ""; document.getElementById("newProps").value = "";
+  rebuildTags();
+  select(anns.length - 1);
+};
+document.getElementById("cancelTag").onclick = () => { document.getElementById("pick").style.display = "none"; };
+
+document.getElementById("download").onclick = () => {
+  const out = anns.map(({ _el, isNew, ...a }) => ({ ...a, position: a.position.map((v, k) => v + DATA.centre[k]) }));
+  const blob = new Blob([JSON.stringify({ annotations: out }, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "tags.json"; a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+document.getElementById("size").oninput = (e) => { ptsMat.size = +e.target.value; };
+document.getElementById("showCams").onchange = (e) => { cams.visible = e.target.checked; };
+document.getElementById("showTags").onchange = (e) => { tagGroup.visible = e.target.checked; labelsEl.style.display = e.target.checked ? "" : "none"; };
+
+const info = DATA.info || {};
+document.getElementById("summary").textContent =
+  `${DATA.count.toLocaleString()} points · ${DATA.cameras.length} cameras · ` +
+  `${DATA.units === "meters" ? "metric scale" : "scale unknown"}` + (info.method ? ` · ${info.method}` : "");
+
+// initial view: from above and behind the camera path, looking at the centre
+world.updateMatrixWorld();
+camera.position.set(S * 0.9, S * 1.1, S * 0.9);
+controls.target.set(0, 0, 0);
+camera.near = S / 1000; camera.far = S * 100; camera.updateProjectionMatrix();
+rebuildTags();
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  renderer.setSize(w, h, false);
+  renderer.domElement.style.width = w + "px"; renderer.domElement.style.height = h + "px";
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(view);
+resize();
+
+const tmp = new THREE.Vector3();
+(function loop() {
+  requestAnimationFrame(loop);
+  controls.update();
+  renderer.render(scene, camera);
+  const w = view.clientWidth, h = view.clientHeight;
+  for (const a of anns) {
+    tmp.copy(worldPos(a));
+    tmp.project(camera);
+    const vis = tmp.z < 1 && Math.abs(tmp.x) < 1.1 && Math.abs(tmp.y) < 1.1;
+    a._el.style.display = vis ? "" : "none";
+    a._el.style.left = ((tmp.x + 1) / 2) * w + "px";
+    a._el.style.top = ((1 - tmp.y) / 2) * h + "px";
+  }
+})();
+</script>
+</body>
+</html>
